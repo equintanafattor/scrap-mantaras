@@ -6,7 +6,7 @@ from playwright.sync_api import sync_playwright
 
 ARCHIVO_SALIDA = "expedientes_pjn_detalle.xlsx"
 MAX_FILAS_POR_PAGINA = None  # None = todas
-MAX_PAGINAS_POR_EJECUCION = 5
+MAX_PAGINAS_POR_EJECUCION = 15
 
 
 def limpiar(texto: str) -> str:
