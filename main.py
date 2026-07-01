@@ -6,7 +6,7 @@ from playwright.sync_api import sync_playwright
 
 ARCHIVO_SALIDA = "expedientes_pjn_detalle.xlsx"
 MAX_FILAS_POR_PAGINA = None  # None = todas
-MAX_PAGINAS_POR_EJECUCION = 15
+MAX_PAGINAS_POR_EJECUCION = 20
 
 
 def limpiar(texto: str) -> str:
@@ -199,7 +199,21 @@ def main():
                     ojo.first.click()
                     ultimo_movimiento = obtener_ultimo_movimiento(page)
 
-                    # guardar fila normal
+                    nueva_fila = {
+                        "Número de expediente": expediente,
+                        "Juzgado": dependencia,
+                        "Carátula": caratula,
+                        "Situación": situacion,
+                        "Últ. Act. listado": ultima_act_listado,
+                        "Último movimiento": ultimo_movimiento,
+                        "Error": "",
+                    }
+
+                    df = pd.concat([df, pd.DataFrame([nueva_fila])], ignore_index=True)
+                    procesados.add(expediente)
+                    guardar(df)
+
+                    print(f"Guardado OK. Total actual: {len(df)}")
 
                     volver_a_lista(page)
 
@@ -222,7 +236,6 @@ def main():
 
                     input("Revisá el navegador, volvé manualmente a la lista y presioná ENTER...")
 
-                volver_a_lista(page)
                 time.sleep(2)
             
             links = page.locator("a, button")
