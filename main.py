@@ -1,12 +1,13 @@
 from pathlib import Path
 import time
+import re
 
 import pandas as pd
 from playwright.sync_api import sync_playwright
 
 ARCHIVO_SALIDA = "expedientes_pjn_detalle.xlsx"
 MAX_FILAS_POR_PAGINA = None  # None = todas
-MAX_PAGINAS_POR_EJECUCION = 30
+MAX_PAGINAS_POR_EJECUCION = 63
 
 
 def limpiar(texto: str) -> str:
@@ -14,27 +15,20 @@ def limpiar(texto: str) -> str:
 
 
 def extraer_primera_actuacion(texto: str) -> str:
-    partes = texto.split("Oficina:")
+    patron = re.search(
+        r"Oficina:\s*(.*?)\s*Fecha:\s*(.*?)\s*Tipo actuacion:\s*(.*?)\s*(?:Descripcion|Descripción):\s*(.*?)(?=\s*Oficina:|\s*Descargar|\s*Ver|\s*Contáctenos|$)",
+        texto,
+        re.IGNORECASE,
+    )
 
-    if len(partes) < 2:
+    if not patron:
         return ""
 
-    primera = "Oficina:" + partes[1]
+    fecha = patron.group(2).strip()
+    tipo = patron.group(3).strip()
+    descripcion = patron.group(4).strip()
 
-    fecha = ""
-    tipo = ""
-    descripcion = ""
-
-    if "Fecha:" in primera and "Tipo actuacion:" in primera:
-        fecha = primera.split("Fecha:")[1].split("Tipo actuacion:")[0].strip()
-
-    if "Tipo actuacion:" in primera and "Descripcion:" in primera:
-        tipo = primera.split("Tipo actuacion:")[1].split("Descripcion:")[0].strip()
-
-    if "Descripcion:" in primera:
-        descripcion = primera.split("Descripcion:")[1]
-        descripcion = descripcion.split("Oficina:")[0].strip()
-        descripcion = descripcion.replace("Descargar Ver", "").strip()
+    descripcion = descripcion.replace("Descargar Ver", "").strip()
 
     return f"{fecha}: {tipo} - {descripcion}".strip()
 
@@ -61,11 +55,40 @@ def obtener_ultimo_movimiento(page) -> str:
                 celdas = filas.nth(j).locator("td")
 
                 if celdas.count() >= 4:
-                    fecha = limpiar(celdas.nth(1).inner_text())
-                    tipo = limpiar(celdas.nth(2).inner_text())
-                    descripcion = limpiar(celdas.nth(3).inner_text())
+                    valores = []
 
-                    if fecha:
+                    for k in range(celdas.count()):
+                        valor = limpiar(celdas.nth(k).inner_text())
+
+                        if not valor:
+                            continue
+
+                        if valor in ["Descargar", "Ver"]:
+                            continue
+
+                        valores.append(valor)
+
+                    texto_fila = " ".join(valores)
+
+                    # Caso accesible: Oficina: ... Fecha: ... Tipo actuacion: ... Descripcion: ...
+                    if "Oficina:" in texto_fila and "Fecha:" in texto_fila:
+                        movimiento = extraer_primera_actuacion(texto_fila)
+                        if movimiento:
+                            return movimiento
+
+                    # Caso tabla normal: oficina, fecha, tipo, descripcion, a fs
+                    fecha_idx = None
+
+                    for idx, valor in enumerate(valores):
+                        if re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", valor):
+                            fecha_idx = idx
+                            break
+
+                    if fecha_idx is not None and len(valores) > fecha_idx + 2:
+                        fecha = valores[fecha_idx]
+                        tipo = valores[fecha_idx + 1]
+                        descripcion = valores[fecha_idx + 2]
+
                         return f"{fecha}: {tipo} - {descripcion}".strip()
 
     return ""
