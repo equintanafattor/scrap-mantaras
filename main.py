@@ -8,6 +8,7 @@ from playwright.sync_api import sync_playwright
 ARCHIVO_SALIDA = "expedientes_pjn_detalle.xlsx"
 MAX_FILAS_POR_PAGINA = None  # None = todas
 MAX_PAGINAS_POR_EJECUCION = 63
+SOLO_COMPLETAR_VACIOS = True
 
 
 def limpiar(texto: str) -> str:
@@ -16,7 +17,7 @@ def limpiar(texto: str) -> str:
 
 def extraer_primera_actuacion(texto: str) -> str:
     patron = re.search(
-        r"Oficina:\s*(.*?)\s*Fecha:\s*(.*?)\s*Tipo actuacion:\s*(.*?)\s*(?:Descripcion|Descripción):\s*(.*?)(?=\s*Oficina:|\s*Descargar|\s*Ver|\s*Contáctenos|$)",
+        r"Oficina:\s*(.*?)\s*Fecha:\s*(.*?)\s*Tipo actuacion:\s*(.*?)\s*(?:Descripcion|Descripción|Detalle):\s*(.*?)(?=\s*Oficina:|\s*Descargar|\s*Ver|\s*Contáctenos|$)",
         texto,
         re.IGNORECASE,
     )
@@ -90,6 +91,11 @@ def obtener_ultimo_movimiento(page) -> str:
                         descripcion = valores[fecha_idx + 2]
 
                         return f"{fecha}: {tipo} - {descripcion}".strip()
+    
+    print("\nDEBUG: no pude extraer movimiento.")
+    print("URL:", page.url)
+    print(limpiar(page.inner_text("body"))[:4000])
+    input("Revisá esta pantalla y presioná ENTER para continuar...")
 
     return ""
 
@@ -122,7 +128,12 @@ def volver_a_lista(page):
 
 def cargar_existentes() -> pd.DataFrame:
     if Path(ARCHIVO_SALIDA).exists():
-        return pd.read_excel(ARCHIVO_SALIDA)
+        df = pd.read_excel(ARCHIVO_SALIDA)
+
+        if "Error" not in df.columns:
+            df["Error"] = ""
+
+        return df
 
     return pd.DataFrame(
         columns=[
@@ -132,14 +143,18 @@ def cargar_existentes() -> pd.DataFrame:
             "Situación",
             "Últ. Act. listado",
             "Último movimiento",
+            "Error",
         ]
     )
 
 
 def guardar(df: pd.DataFrame):
-    df.to_excel(ARCHIVO_SALIDA, index=False)
+    salida = Path(ARCHIVO_SALIDA).resolve()
+    print(f"Guardando en: {salida}")
+
+    df.to_excel(salida, index=False)
     df.to_csv(
-        ARCHIVO_SALIDA.replace(".xlsx", ".csv"),
+        salida.with_suffix(".csv"),
         index=False,
         encoding="utf-8-sig",
     )
@@ -164,7 +179,21 @@ def click_siguiente_si_existe(page):
 
 def main():
     df = cargar_existentes()
-    procesados = set(df["Número de expediente"].dropna().astype(str).str.strip())
+    df["Número de expediente"] = df["Número de expediente"].astype(str).str.strip()
+
+    if SOLO_COMPLETAR_VACIOS:
+        pendientes = set(
+            df[
+                df["Último movimiento"].isna()
+                | (df["Último movimiento"].astype(str).str.strip() == "")
+            ]["Número de expediente"]
+        )
+
+        print(f"Modo completar vacíos activo. Pendientes: {len(pendientes)}")
+        procesados = set()
+    else:
+        pendientes = set()
+        procesados = set(df["Número de expediente"].dropna().astype(str).str.strip())
 
     with sync_playwright() as p:
         browser = p.chromium.connect_over_cdp("http://localhost:9222")
@@ -200,6 +229,9 @@ def main():
                     continue
 
                 expediente = limpiar(cells.nth(0).inner_text())
+                if SOLO_COMPLETAR_VACIOS and expediente not in pendientes:
+                    print("No pendiente, salto:", expediente)
+                    continue
 
                 if not expediente or expediente in procesados:
                     print("Ya procesado, salto:", expediente)
@@ -222,20 +254,44 @@ def main():
                     ojo.first.click()
                     ultimo_movimiento = obtener_ultimo_movimiento(page)
 
-                    nueva_fila = {
-                        "Número de expediente": expediente,
-                        "Juzgado": dependencia,
-                        "Carátula": caratula,
-                        "Situación": situacion,
-                        "Últ. Act. listado": ultima_act_listado,
-                        "Último movimiento": ultimo_movimiento,
-                        "Error": "",
-                    }
+                    if SOLO_COMPLETAR_VACIOS:
+                        idx = df.index[df["Número de expediente"] == expediente]
 
-                    df = pd.concat([df, pd.DataFrame([nueva_fila])], ignore_index=True)
-                    procesados.add(expediente)
+                        if len(idx) > 0:
+                            if SOLO_COMPLETAR_VACIOS:
+                                idx = df.index[
+                                    (df["Número de expediente"].astype(str).str.strip() == expediente)
+                                    & (
+                                        df["Último movimiento"].isna()
+                                        | (df["Último movimiento"].astype(str).str.strip() == "")
+                                    )
+                                ]
+
+                                print("Movimiento obtenido:", ultimo_movimiento)
+                                print("Filas a actualizar:", len(idx))
+
+                                if len(idx) > 0 and ultimo_movimiento.strip():
+                                    df.loc[idx, "Último movimiento"] = ultimo_movimiento
+                                    df.loc[idx, "Error"] = ""
+                                    pendientes.discard(expediente)
+                                else:
+                                    df.loc[idx, "Error"] = "No se pudo obtener último movimiento"
+                            df.loc[idx[0], "Error"] = ""
+                    else:
+                        nueva_fila = {
+                            "Número de expediente": expediente,
+                            "Juzgado": dependencia,
+                            "Carátula": caratula,
+                            "Situación": situacion,
+                            "Últ. Act. listado": ultima_act_listado,
+                            "Último movimiento": ultimo_movimiento,
+                            "Error": "",
+                        }
+
+                        df = pd.concat([df, pd.DataFrame([nueva_fila])], ignore_index=True)
+                        procesados.add(expediente)
+
                     guardar(df)
-
                     print(f"Guardado OK. Total actual: {len(df)}")
 
                     volver_a_lista(page)
